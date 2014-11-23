@@ -1,0 +1,644 @@
+\documentclass{mc2015}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\usepackage[T1]{fontenc}         % Use T1 encoding instead of OT1
+\usepackage[utf8]{inputenc}      % Use UTF8 input encoding
+\usepackage{microtype}           % Improve typography
+\usepackage{booktabs}            % Publication quality tables
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage[load-configurations=binary,exponent-product=\cdot]{siunitx}
+\usepackage[colorlinks,breaklinks]{hyperref}
+\hypersetup{linkcolor=black, citecolor=black, urlcolor=black}
+
+\def\equationautorefname{Eq.}
+\def\figureautorefname{Fig.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\authorHead{Romano, Siegel, and Rahaman}
+\shortTitle{Influence of the Memory Subsystem on Monte Carlo Code Performance}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{document}
+
+\title{Influence of the Memory Subsystem on Monte Carlo Code Performance}
+
+\author{Paul K. Romano}
+\affil{Bechtel Marine Propulsion Corporation, Knolls Atomic Power Laboratory
+  \\ P.O. Box 1072, Schenectady, NY 12301, United States
+  \\ paul.romano@unnpp.gov}
+
+\author{Andrew R. Siegel}
+\author{Ronald O. Rahaman}
+\affil{Argonne National Laboratory, Theory and Computing Sciences \\ 9700 S
+  Cass Ave., Argonne, IL 60439, United States \\ siegela@mcs.anl.gov}
+
+\maketitle
+
+\begin{abstract}
+In this study, a detailed look at how miss rates and latencies in a multi-level
+memory hierarchy can have significant effects on the performance of a Monte
+Carlo code is presented. Simulations of the Monte Carlo performance benchmark
+were run, and hardware performance counters were collected using the
+Performance API (PAPI). The results of the simulations and an accompanying
+analysis suggest that for light-water reactor depletion problems, the most
+important factor that determines performance is the effective memory latency
+accounting for characteristics of the L2 cache, L3 cache, and main
+memory. Observed performance in multi-socket NUMA architectures was also
+explained by the performance counters collected.
+
+\emph{Key Words}: Monte Carlo, memory, cache, NUMA, OpenMP
+\end{abstract}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+
+Over the last decade, a paradigm shift has occurred in microprocessor design,
+where increases in performance are now primarily obtained via greater
+thread-level and data-level parallelism rather than by increases in CPU clock
+frequencies as evidenced by the current generation of multi-core, pipelined,
+multiple-issue processors. While the raw floating point performance of
+processors has grown steadily, the performance of the memory subsystem has not
+kept up to pace and as a result, many codes are now limited not by floating
+point operations per second (FLOPs) but rather by memory loads and stores. One
+key example is Monte Carlo (MC) neutral particle transport as used for nuclear
+reactor calculations. These calculations are particularly challenging for a
+number of reasons: 1) the memory requirements have the potential to exceed the
+memory available on a single node, 2) the complex memory access patterns
+typically result in a high cache miss rate, and 3) the level of spatial fidelity
+needed requires extremely long time-to-solution for most problems of interest.
+
+Many recent studies have focused on understanding and offering solutions to
+these challenging aspects of MC reactor simulations. Algorithmic improvements
+have helped to achieve linear scaling on distributed-memory
+architectures~\cite{nse-romano-2012, ane-romano-2013} , and various studies have
+shown that the total memory requirements can be decomposed effectively using
+either domain decomposition~\cite{jcp-siegel-2012, jcp-siegel-2013,
+  physor-horelik-2014, pc-horelik-2014} or data
+decomposition~\cite{jcp-romano-2013}. With most of the barriers to effective
+utilization of distribution-memory architectures having been overcome, the focus
+is now shifting to scaling and performance issues for on-node, shared-memory
+architectures. Making effective use of multi- and many-core processors will be
+considerably more difficult due to the greater complexity of memory hierarchies
+and the fact that they are generally not programmable, i.e. the programmer does
+not have direct control over the locality of data within the memory hierarchy
+as is the case in distributed-memory systems. Indeed, initial studies
+demonstrate that sub-optimal scaling is observed for MC methods on a variety
+of hardware~\cite{ijhpca-siegel-2014}.
+
+Researchers are beginning to make inroads in understanding the reasons for the
+degradation of scaling on shared-memory systems. Of particular interest are the
+studies of Tramm et al. demonstrating that the key performance barrier for MC
+reactor calculations on multi-core processors is contention for shared-memory
+resources. Through the development of the XSBench mini-app, Tramm and
+Siegel show that many hardware counters relating to the memory subsystem are
+directly correlated to performance degradation for multi-threaded MC
+simulations~\cite{physor-tramm-2014, ane-tramm-2014}. In the present work, we
+seek to address a number of shortcoming in these studies, namely:
+\begin{itemize}
+\item The previous studies did not account for tallies that would be required
+  for a reactor depletion calculation; various reaction rates need to be
+  tallied for each nuclide in each unique depletable region in a reactor---for a
+full core analysis, each depletable region would consist of a segment of a fuel pin.
+\item While the studies demonstrated correlation between the scaling
+  degradation and various hardware counters, no explanation was offered for
+  the exact mechanism of the degradation.
+\item Performance counter measurements were performed on the XSBench mini-app,
+  but similar measurements were not shown for the full application it is meant
+  to mimic, OpenMC.
+\end{itemize}
+As will be shown. the results also help to explain performance trade-offs for
+using fewer or greater numbers of processes and threads within a single node.
+
+\subsection{MC Particle Transport Simulations}
+
+MC neutral particle transport methods are typically formulated by using the
+classical history method, where individual particles are followed one-by-one
+from birth to death. This approach lends itself naturally to a parallel
+implementation where each processing element tracks a different particle. This
+can be done at either the process- or thread-level (or both). In the former
+case, the simplest approach is to fully replicate the data structures in the
+physical address space of each process, provided enough on-node memory is
+available. In the latter case, most of the data is shared between different
+threads with only a few key variables replicated for each thread. The amount of
+memory required by each process largely depends on the characteristics of the
+problem being run, with the following generic categories of data:
+\begin{itemize}
+\item \emph{Geometry and materials} --- An abstract model of the shape and
+  composition of each unique region within the geometry must be held in
+  memory. In most MC codes, the geometry is represented using combinatorial
+  geometry, where regions of space are defined as the union, difference, and
+  intersection of curved surfaces. Each region of space must also be assigned a
+  material, defined by its physical characteristics which, at the very least,
+  includes the nuclides and their corresponding densities.
+\item \emph{Cross sections} --- Each unique nuclide in the problem must be
+  accompanied by a set of interaction data that describe the likelihood of
+  various reactions and their outcomes. This data is used to sample the
+  distance to next collision as well as to select a nuclide and reaction within
+  a material for sampling collision physics.
+\item \emph{Tallies} --- This refers to a collection of pre- and user-defined
+  physical quantities that are accumulated during the simulation. As an
+  example, the user may wish to know the fission reaction rate within a
+  particular region of the problem.
+\end{itemize}
+Unfortunately, due to the stochastic nature of particle transport, there is no
+consistent pattern for how the various parts of the data in memory are
+accessed. To understand why this is detrimental to performance, a basic
+understanding of the memory hierarchy of modern computer architectures is
+necessary.
+
+\subsection{Memory and Cache Hierarchy}
+
+When a process is executed, the program data at any point of time during
+execution is stored in main memory. Physically, main memory is implemented in
+DRAM (dynamic random access memory) chips, which at the time of writing
+typically hold on the order of gigabytes of data. However, the high latency of
+accessing data, in the hundreds of clock cycles, means that it is desirable to
+avoid having to constantly transfer data to and from main memory. Thus, most
+CPUs implement a series a caches: smaller but faster memories that hold
+recently-used data. Most modern multi-core CPUs have two or three levels of
+caches; the fastest (and smallest) is referred to as the L1 (level 1) cache and
+subsequent caches are ordered in terms of increasing latency and size. When the
+CPU issues a load instruction, the hardware first determines whether the block
+of memory requested is already in the highest level (L1) cache. If it is, this
+is referred to as a L1 \emph{cache hit}. Similarly, if the data is not present,
+it's called a L1 \emph{cache miss}. In the event of a cache miss, the next
+level of cache is checked for the requested data, and the process is repeated
+until the data is found. The fraction of accesses that result in a cache hit or
+miss is called the \emph{hit rate} and \emph{miss rate}, respectively.
+
+Ideally, one would like all the memory to always be available in the highest
+level, lowest latency cache. However, the L1 cache size is typically less than
+a megabyte, whereas the memory needed to run a MC simulation can be tens or
+hundreds of gigabytes. Given that the data is accessed more-or-less randomly,
+the cache miss ratios can be very high, meaning that many memory accesses would
+incur the latency penalty of accessing the L3 cache or, even worse, main
+memory. As we will show in the results, the observed performance of a MC
+transport simulation is very closely related to the effective memory latency
+accounting for all levels of the memory hierarchy. This has important
+implications for MC run strategies.
+
+The performance of the cache hierarchy depends not only on the sizes and speeds
+of the cache, but also on how data is managed and mapped between different
+levels. This is characterized by the \emph{associativity}, \emph{replacement
+policy}, and whether write misses are handled via write-through or
+write-back. In modern processors, a specialized cache called the
+translation lookaside buffer (TLB) that handles virtual-to-physical address
+translation is also used. A thorough discussion of these implementation details
+is beyond the scope of the current work.
+
+\section{Methods}
+
+The goal of the present work is to characterize the impact of a multi-level
+memory hierarchy on the performance of a Monte Carlo neutron transport
+simulation. To do this, we will look at the performance of the OpenMC Monte
+Carlo particle transport code~\cite{ane-romano-2013, ane-romano-2014}, an
+open-source continuous-energy transport code that uses combinatorial
+geometry. OpenMC, while it does not have as rich a set of capabilities as more
+mature codes like MCNP~\cite{lanl-goorley-2014} or
+MC21~\cite{ane-griesheimer-2014}, uses the same methods and interaction data for
+tracking particles; thus, conclusions about the behavior of OpenMC should apply
+equally well to other production codes. OpenMC implements distributed-memory
+parallelism via MPI and shared-memory parallelism via OpenMP and has
+demonstrated excellent distributed-memory scaling on leadership class
+supercomputers~\cite{ane-romano-2013}.
+
+Following in the same vein as previous works, we will restrict our tests to a
+single reactor benchmark---the Monte Carlo performance
+benchmark~\cite{mc-hoogenboom-2011}, more commonly referred to as the
+Hoogenboom-Martin benchmark after the names of its original authors. We will
+herein refer to it as the H-M benchmark. This benchmark captures most of the
+important algorithmic and computational complexities of a pressurized water
+reactor problem while not being overly cumbersome to model.
+
+To relate the observed performance in OpenMC to measurements of accesses and
+miss rates at various levels of the memory hierarchy, a number of techniques
+could be employed. One approach is to use a cache simulation tool like
+Cachegrind~\cite{cachegrind}, part of the Valgrind utility, that relies on
+trace-driven simulation of the machine's cache. The benefits of this approach
+are its ease of use, ability to simulate caches of different sizes, and the fact
+that it can attribute cache misses and hits to lines of source code. However, it
+is not without a number of shortcomings; to name a few, TLB cache hits and
+misses due to speculative execution are not considered, all threads are
+serialized such that the results may not be representative of the true
+performance, and the simulated cache may not necessarily match the machine's
+cache with respect to associativity and replacement policy. Instead, we have
+chosen to use the Performance Application Programming Interface (PAPI), which
+provides a set of library routines for directly instrumenting hardware
+performance counters. Hardware counters are special-purpose registers that can
+store the count of many hardware events with very low overhead. By using
+hardware counters directly, we obtain a much more accurate accounting of cache
+hits and misses and can combine measurements from threads running simultaneously
+as well.The downside is that the code has to make calls to PAPI directly, and
+the types and meanings of performance counters can vary considerably across
+different architectures.
+
+PAPI requires that the user request a set of hardware events to be
+considered. In our simulations of OpenMC, we collected the following counters:
+level 2 instruction cache accesses and misses (\texttt{PAPI\_L2\_ICA} and
+\texttt{PAPI\_L2\_ICM}), level 2 data accesses and misses
+(\texttt{PAPI\_L2\_DCA} and \texttt{PAPI\_L2\_DCM}), and level 3 cache total
+accesses and misses (\texttt{PAPI\_L3\_TCA} and \linebreak
+\texttt{PAPI\_L3\_TCM}).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Results and Analysis}
+
+To understand the performance of the OpenMC code on the H-M benchmark and how
+it relates to the memory and cache hierarchy, a series of simulations was
+performed and the aforementioned performance counters were collected. Four
+different cases of the H-M benchmark were considered. The first case is the
+standard H-M benchmark with no modifications. The second case is the same as
+the first, except that reaction rates for four reactions were collected for
+each nuclide over a 289 x 289 mesh. This was done to mimic the tallies that
+would be necessary for a depletion simulation. The third and fourth cases were
+modified to include 423 nuclide is the fuel region, with the third having no
+tallies and the fourth having the same tallies as in the second case. The
+number of nuclides in the fuel was increased as a depletion simulation would
+require a large nuclide inventory. Given that the number of cross section
+lookups is directly proportional to the number of nuclides, having a larger
+nuclide inventory has a significant effect of performance. Let us refer to
+cases 1 and 2 as small H-M and to cases 3 and 4 as large H-M.
+
+For each of the four cases, OpenMC was run on two different nodes. The first
+node contains two 10-core Intel Xeon E5-2680 v2 (Ivy Bridge-EP
+microarchitecture) processors, each of which has private L1 and L2 instruction
+and data caches and a shared L3 cache. The second node contains two 12-core
+Intel Xeon E5-2680 v3 (Haswell-EP microarchitecture) processors, which also have
+private L1 and L2 instruction and data caches and a shared L3 cache. While each
+simulation was run so as to fully utilize all cores within the node, we varied
+the number of processors and threads to analyze its effect of performance as
+well.
+
+\autoref{tab:small-ivy} shows the results for the small H-M benchmark on the Ivy
+Bridge processor with and without tallies. Miss rates were calculated simply as
+the number of misses over the number of accesses. The bandwidth utilization was
+calculated as~\cite{physor-tramm-2014}
+\begin{equation}
+  \label{eq:bandwidth}
+  \text{Bandwidth} = \frac{\text{\texttt{PAPI\_L3\_TCM}}\cdot\text{Cache line
+      size}}{\text{Wall-clock time}}.
+\end{equation}
+In theory, rather than using the wall-clock time, it would also be possible to
+use the CPU clock frequency and a performance counter for the number of cycles
+to calculate the bandwidth. However, the Intel Xeon processors used in this
+study take advantage of a feature called Turbo Boost where the clock frequency
+changes dynamically based on the workload.
+
+We see that the best performance is achieved with two MPI processes and eight
+OpenMC threads. This can be explained by the following arguments. When 20
+processes are used, each process has its own physical address space containing
+the fully replicated problem data. Thus, even if two processes load the same
+piece of data, e.g. a cross section for a particular nuclide at a particular
+energy, at the same time, there is no guarantee that either will results in a L3
+cache hit because the data are in separate address spaces. As more threads and
+fewer processors are used, there is a higher likelihood that data used by
+multiple threads will already be in the shared L3 cache, and thus we see that
+the L3 miss rate drops substantially as more threads are added. Note however
+that when we reach 20 threads, a separate effect is at play. As there are two
+physical CPUs, each with its own main memory bank and shared L3 cache, when 20
+threads are used, half of the memory accesses will refer to physical addresses
+in the remote memory bank which results in a much higher L3 miss
+rate. Furthermore, the latency to access the remote L3 cache and main memory is
+considerably higher than the latency for the local memories\footnote{In this
+  particular architecture, memory accesses to the remote L3 cache and main
+  memory must travel through the Quick Path interconnect (QPI) bus}. Together,
+the increase in the L3 miss rate and the effective memory latencies contribute
+to a stark drop in the observed performance.
+\begin{table}[htb]
+  \centering
+  \caption{Cache accesses and miss rates, bandwidth utilization, and observed
+    performance for the small H-M benchmark on the Intel Xeon E5-2680 v2 (Ivy
+    Bridge) processor. All quantities followed by $\ddagger$ are on a per
+    particle basis.}
+  \label{tab:small-ivy}
+  \footnotesize{
+  \begin{tabular}{l*{8}{r}}
+    \toprule
+    & \multicolumn{2}{c}{L2 Instruction} & \multicolumn{2}{c}{L2 Data} &
+    \multicolumn{2}{c}{L3} \\
+    \cmidrule(r){2-3} \cmidrule(r){4-5} \cmidrule(r){6-7}
+    \parbox{1.5cm}{Processes /\\Threads} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)}
+    & \parbox[c]{1.3cm}{\centering Bandwidth$^\ddagger$\\(MiB/s)}
+    & \parbox[c]{1.8cm}{\centering Tracking Rate\\(neutron/s)} \\
+    \midrule
+    \multicolumn{9}{c}{\textbf{No Tallies}} \\
+    \midrule
+    20 / 1 & 1469 & 38.7 & 28776 & 27.1 & 8367 & 19.7 & 8648 & 85990 \\
+    10 / 2 & 1481 & 38.2 & 30268 & 30.8 & 9887 & 8.6 & 4636 & 88852 \\
+    4 / 5 & 1476 & 38.6 & 30506 & 33.3 & 10728 & 3.3 & 1921 & 89510 \\
+    2 / 10 & 1485 & 37.2 & 30654 & 35.7 & 11490 & 1 & 643 & 89986 \\
+    1 / 20 & 1640 & 38.6 & 31381 & 36.8 & 12189 & 9.4 & 3326 & 47730 \\
+    \midrule
+    \multicolumn{9}{c}{\textbf{Tallies}} \\
+    \midrule
+    20 / 1 & 5433 & 25.3 & 52918 & 24.4 & 14282 & 23.2 & 9162 & 45387 \\
+    10 / 2 & 5472 & 25.9 & 54686 & 26.2 & 15767 & 13.9 & 6298 & 47114 \\
+    4 / 5 & 5474 & 26.8 & 55376 & 27.4 & 16642 & 8.6 & 4173 & 48014 \\
+    2 / 10 & 5462 & 25.8 & 55522 & 29.2 & 17624 & 6.2 & 3207 & 48265 \\
+    1 / 20 & 5640 & 25.9 & 55025 & 30.8 & 18384 & 13 & 4438 & 30463 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+Interestingly, while the L3 miss rate drops from about 20\% to 1\% going from
+20 processes/1 thread to 2 processes/10 threads for the no tallies case in
+\autoref{tab:small-ivy}, the performance increases only by a very small
+amount. This is due to the fact the the L2 miss rate increases slightly with
+increasing numbers of threads thereby offsetting the lower L3 miss rate. To
+substantiate this, we can develop a metric for the effective total memory
+latency per particle:
+\begin{equation}
+  \bar{\alpha} = N_{L2}\cdot \left ( (1-M_{L2})\alpha_{L2} + M_{L2}\cdot((1 -
+  M_{L3})\alpha_{L3} + M_{L3} \alpha_{main}) \right )
+\end{equation}
+where $N_X$ is the total accesses per particle at the $X$ level (where $X$ can
+be L2, L3 or main memory), $M_X$ is the miss rate at the $X$ level, and
+$\alpha_X$ is the latency for a hit at the $X$ level. To calculate the effective
+latency, we use some gross estimates from~\cite{intel} for memory latencies: 10
+cycles of a L2 hit, 50 cycles for a local L3 hit, 100 cycles for a remote L3
+hit, 170 cycles for local DRAM access, and 280 cycles for remote DRAM access. In
+the 20 thread case, we assume that L3 and main memory accesses are split between
+the local and remote processor. \autoref{tab:latency} shows the calculated
+effective latencies for the small H-M benchmark. The expected speedup was
+calculated assuming that the performance scales as the inverse of the effective
+latency; therefore, the relative speedup is simply the ratio of effective
+latencies. Comparing the expected speedup to the actual observed speedup, we see
+that they are in remarkable agreement. The effective latency argument
+successfully predicts a smaller speedup for the no tallies case as well as the
+large drop in performance observed for the 20 thread runs.
+\begin{table}[htb]
+  \centering
+  \caption{Effective latency and expected/actual speedup for the small H-M
+    benchmark on the Intel Xeon E5-2680 v2 (Ivy Bridge) processor.}
+  \label{tab:latency}
+  \footnotesize{
+  \begin{tabular}{l*{3}{r}}
+    \toprule
+    \parbox[c]{1.5cm}{\centering Processes /\\Threads}
+    & \parbox[c]{2cm}{\centering Latency$^\ddagger$\\($10^3$ cycles)}
+    & \parbox[c]{3cm}{\centering Expected speedup\\(compared to 20 / 1)}
+    & \parbox[c]{3cm}{\centering Actual speedup\\(compared to 20 / 1)} \\
+    \midrule
+    \multicolumn{4}{c}{\textbf{No Tallies}} \\
+    \midrule
+    20 / 1 & 784 & 1.00 & 1.00  \\
+    10 / 2 & 772 & 1.02 & 1.03  \\
+    4 / 5 &  751 & 1.04 & 1.04 \\
+    2 / 10 & 757 & 1.04 & 1.05  \\
+    1 / 20 & 1227 & 0.64 & 0.56 \\
+    \midrule
+    \multicolumn{4}{c}{\textbf{Tallies}} \\
+    \midrule
+    20 / 1 & 15089 & 1.00 & 1.00 \\
+    10 / 2 & 14381 & 1.05 & 1.06 \\
+    4 / 5 &  12696 & 1.19 & 1.18 \\
+    2 / 10 & 11526 & 1.31 & 1.30 \\
+    1 / 20 & 17438 & 0.87 & 0.80 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\autoref{tab:large-ivy} shows the results for the large H-M benchmark on the
+Ivy Bridge processor with and without tallies. Similar themes are seen as in
+the small H-M benchmark where the maximum performance is obtained with 2
+processes / 10 threads. Due to the code spending a large fraction of its time
+collecting tallies, the L2 data cache accesses are much higher than for small
+H-M along with a very high miss rate, resulting in a high number of L3 accesses
+as well. Also note that the main memory bandwidth utilization becomes as high
+as 21 GiB/s. Previous measurements~\cite{ane-tramm-2014} using the STREAM
+benchmark demonstrated that the maximum sustained bandwidth available to a user
+application on a similar platform is about 25--30 GiB/s. This lends further
+credence to the argument that in our cases, OpenMC was primarily limited by
+latency rather than available bandwidth.
+\begin{table}[htb]
+  \centering
+  \caption{Cache accesses and miss rates, bandwidth utilization, and observed
+    performance for the large H-M benchmark on the Intel Xeon E5-2680 v2 (Ivy
+    Bridge) processor. All quantities followed by $\ddagger$ are on a per
+    particle basis.}
+  \label{tab:large-ivy}
+  \footnotesize{
+  \begin{tabular}{l*{8}{r}}
+    \toprule
+    & \multicolumn{2}{c}{L2 Instruction} & \multicolumn{2}{c}{L2 Data} &
+    \multicolumn{2}{c}{L3} \\
+    \cmidrule(r){2-3} \cmidrule(r){4-5} \cmidrule(r){6-7}
+    \parbox{1.5cm}{Processes /\\Threads} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)}
+    & \parbox[c]{1.3cm}{\centering Bandwidth$^\ddagger$\\(MiB/s)}
+    & \parbox[c]{1.8cm}{\centering Tracking Rate\\(neutron/s)} \\
+    \midrule
+    \multicolumn{9}{c}{\textbf{No Tallies}} \\
+    \midrule
+    20 / 1 & 2228 & 78.5 & 227703 & 85.4 & 196259 & 21.6 & 21333 & 8261 \\
+    10 / 2 & 2180 & 78.5 & 235104 & 85.8 & 203425 & 16.4 & 17845 & 8783 \\
+    4 / 5 & 2153 & 79 & 234709 & 85.9 & 203321 & 9.4 & 11443 & 9767 \\
+    2 / 10 & 2140 & 79.2 & 235053 & 85.8 & 203369 & 4.6 & 6107 & 10745 \\
+    1 / 20 & 2252 & 78.1 & 235837 & 86 & 204619 & 6.2 & 5149 & 6626 \\
+    \midrule
+    \multicolumn{9}{c}{\textbf{Tallies}} \\
+    \midrule
+    20 / 1 & 7090 & 63.8 & 493521 & 68.4 & 342185 & 20.8 & 13654 & 3140 \\
+    10 / 2 & 6807 & 63.7 & 452187 & 70.3 & 322207 & 15.5 & 12562 & 4127 \\
+    4 / 5 & 6671 & 63.5 & 423042 & 70 & 300459 & 10.6 & 9735 & 5029 \\
+    2 / 10 & 6627 & 63.5 & 413624 & 69.6 & 291903 & 7 & 6664 & 5339 \\
+    1 / 20 & 6757 & 63.3 & 414357 & 71.4 & 299988 & 8 & 5969 & 4074 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+Another factor that can potentially affect performance is MPI communication,
+especially when a large number of tallies are used. While the simulations run
+here were constructed so as to minimize the impact of network communication, it
+still had a noticeable effect on the cases with tallies using 20 MPI
+processes. In the large H-M case with tallies, almost half of the time was spent
+accumulating tally data from the different MPI ranks. That being said,
+this effect can be reduced to an negligible level by increasing the number of
+particles simulated per batch, or using other techniques to reduce the
+associated communication~\cite{trans-romano-2012}.
+
+\autoref{tab:small-haswell} and \autoref{tab:large-haswell} show the results for
+the small and large H-M benchmarks, respectively, on the node with two 12-core
+Haswell processors with and without tallies. In this case, the best performance
+is obtained for 4 processes / 6 threads. This is a result of a unique snoop mode
+utilized in the Haswell-EP architecture called cluster-of-die where the CPU and
+shared L3 cache are effectively split in half, appearing as two non-uniform
+memory access (NUMA) nodes to the operating system each with half the number of
+cores and L3 cache. This splitting means that the latency to the L3 cache is
+reduced, but the miss rate is also potentially higher due to the reduced size of
+the cache. While there is a general trend of a decreasing L3 miss rate with
+increasing threads, a few of the cases require further explanation. In the 6
+process / 4 thread and 2 process / 12 thread cases, the miss rate is higher than
+it would otherwise have been because processes may contain threads on both NUMA
+nodes within a single socket and therefore cannot share data in the L3 cache. As
+was seen for the Ivy Bridge node, having a single process causes half of the
+memory accesses to cross the QPI bus which incurs a much higher
+latency. Finally, we note that the large H-M model with tallies could not be
+simulated with 24 MPI processes due to insufficient memory.
+\begin{table}[htb]
+  \centering
+  \caption{Cache accesses and miss rates, bandwidth utilization, and observed
+    performance for the small H-M benchmark on the Intel Xeon E5-2680 v3
+    (Haswell) processor. All quantities followed by $\ddagger$ are on a per
+    particle basis.}
+  \label{tab:small-haswell}
+  \footnotesize{
+  \begin{tabular}{l*{8}{r}}
+    \toprule
+    & \multicolumn{2}{c}{L2 Instruction} & \multicolumn{2}{c}{L2 Data} &
+    \multicolumn{2}{c}{L3} \\
+    \cmidrule(r){2-3} \cmidrule(r){4-5} \cmidrule(r){6-7}
+    \parbox{1.5cm}{Processes /\\Threads} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)}
+    & \parbox[c]{1.3cm}{\centering Bandwidth$^\ddagger$\\(MiB/s)}
+    & \parbox[c]{1.8cm}{\centering Tracking Rate\\(neutron/s)} \\
+    \midrule
+    \multicolumn{9}{c}{\textbf{No Tallies}} \\
+    \midrule
+    24 / 1 & 1314 & 40.1 & 26523 & 28.1 & 7957 & 19 & 9589 & 104189 \\
+    12 / 2 & 1334 & 42.4 & 25649 & 33.9 & 9248 & 8.8 & 5436 & 109768 \\
+    6 / 4 & 1369 & 42.4 & 25508 & 37 & 10010 & 9.2 & 4755 & 84991 \\
+    4 / 6 & 1329 & 43.8 & 25472 & 38.4 & 10372 & 2.6 & 1797 & 109937 \\
+    2 / 12 & 1366 & 42 & 25205 & 40.8 & 10868 & 11.1 & 5561 & 75256 \\
+    1 / 24 & 1515 & 43.9 & 25888 & 40.6 & 11172 & 14.7 & 4177 & 41690 \\
+    \midrule
+    \multicolumn{9}{c}{\textbf{Tallies}} \\
+    \midrule
+    24 / 1 & 4460 & 29.1 & 60508 & 20 & 13392 & 23.7 & 9862 & 50866 \\
+    12 / 2 & 4407 & 30.5 & 47419 & 27.5 & 14404 & 15.1 & 7406 & 55814 \\
+    6 / 4 & 4457 & 29.7 & 47507 & 28.5 & 14873 & 14.9 & 6456 & 47695 \\
+    4 / 6 & 4406 & 28.7 & 47115 & 28.7 & 14793 & 9 & 4809 & 59138 \\
+    2 / 12 & 4451 & 30.8 & 47027 & 30.3 & 15596 & 15.4 & 6475 & 44061 \\
+    1 / 24 & 4543 & 28.7 & 47757 & 29.2 & 15265 & 18.6 & 5534 & 31874 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\begin{table}[htb]
+  \centering
+  \caption{Cache accesses and miss rates, bandwidth utilization, and observed
+    performance for the large H-M benchmark on the Intel Xeon E5-2680 v3
+    (Haswell) processor. All quantities followed by $\ddagger$ are on a per
+    particle basis.}
+  \label{tab:large-haswell}
+  \footnotesize{
+  \begin{tabular}{l*{8}{r}}
+    \toprule
+    & \multicolumn{2}{c}{L2 Instruction} & \multicolumn{2}{c}{L2 Data} &
+    \multicolumn{2}{c}{L3} \\
+    \cmidrule(r){2-3} \cmidrule(r){4-5} \cmidrule(r){6-7}
+    \parbox{1.5cm}{Processes /\\Threads} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)} & Accesses$^\ddagger$
+    & \parbox[c]{1.2cm}{\centering Miss\\Rate (\%)}
+    & \parbox[c]{1.3cm}{\centering Bandwidth$^\ddagger$\\(MiB/s)}
+    & \parbox[c]{1.8cm}{\centering Tracking Rate\\(neutron/s)} \\
+    \midrule
+    \multicolumn{9}{c}{\textbf{No Tallies}} \\
+    \midrule
+    24 / 1 & 2029 & 89 & 243020 & 82 & 201185 & 21.4 & 24388 & 9267 \\
+    12 / 2 & 1986 & 88.8 & 202256 & 101.9 & 207830 & 16.1 & 19381 & 9470 \\
+    6 / 4 & 1982 & 88.7 & 194227 & 106.4 & 208397 & 13.2 & 14026 & 8353 \\
+    4 / 6 & 1950 & 88.6 & 192982 & 106.6 & 207414 & 7.5 & 10705 & 11244 \\
+    2 / 12 & 2003 & 88.7 & 193545 & 106.6 & 208054 & 9.2 & 9729 & 8308 \\
+    1 / 24 & 2135 & 88.7 & 193249 & 106.3 & 207256 & 9.9 & 7261 & 5794 \\
+    \midrule
+    \multicolumn{9}{c}{\textbf{Tallies}} \\
+    \midrule
+    24 / 1 & \multicolumn{8}{c}{---} \\
+    12 / 2 & 6586 & 75.7 & 360578 & 87.4 & 320088 & 15.5 & 13274 & 4373 \\
+    6 / 4 & 6278 & 75.6 & 326627 & 31.2 & 302693 & 13.5 & 11557 & 4648 \\
+    4 / 6 & 6387 & 75.8 & 318472 & 91.2 & 295131 & 9.5 & 9408 & 5526 \\
+    2 / 12 & 6286 & 75.4 & 308936 & 90.8 & 285141 & 10.9 & 9504 & 5024 \\
+    1 / 24 & 6341 & 75.2 & 210156 & 91.3 & 287775 & 11.2 & 7872 & 3987 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Conclusions}
+
+In this study, the performance of a Monte Carlo neutron transport simulation of
+a PWR benchmark was shown to be closely related to the number of accesses, miss
+rates, and latencies to various levels of the memory hierarchy. Low-overhead
+performance counters were collected by instrumenting the OpenMC Monte Carlo code
+with calls to PAPI. By calculating an effective memory latency based on the
+performance counter measurements, it was seen that the observed performance
+scaled as the inverse of the effective memory latency.
+
+The present study focused solely on MC simulations of neutron transport in
+light-water reactor depletion problems, which are of great interest to the
+reactor physics community. The characteristics of other problems may be
+substantially different; in particular, other problems may not be as sensitive
+to the effects of latency in the memory hierarchy. One could conjecture, e.g.,
+that photon transport would be less sensitive because photon cross section data
+us simpler in nature than neutron cross sections and consumes less
+memory. Nevertheless, the conclusions of the present study may still
+hold---rather than the primary drivers being the L2, L3, and main memory
+performance, it might shift to the L1 and L2 caches only. Such conjectures would
+need to be borne out through further studies.
+
+It is important to recognize that there are many approximations and assumptions
+inherent in our analysis. To being with, the PAPI performance counters we used
+may not cover all events that lead to cache misses. For example,
+\texttt{PAPI\_L3\_TCM} does not include L2 prefetches that miss in the L3
+cache. Such events could be measured using more complex uncore\footnote{In some
+  multi-core Intel architectures, the uncore subsystem refers to the components
+  of a microprocessor that are not directly on the core but still essential to
+  performance.} performance counters, but we were unable to use these counters
+due to an insufficient Linux kernel version. We also observed apparent miss
+rates greater than 100\% in \autoref{tab:large-haswell}, indicated that the set
+of events covered by \texttt{PAPI\_L2\_DCM} is likely larger than the set of
+events covered by \texttt{PAPI\_L2\_DCA}. In addition, we didn't account for
+cache hits and misses in the TLB, which can sometimes have important effects on
+performance. Lastly, in calculating an expected speedup, we assumed that the
+performance completely governed by the memory latency; this is obviously
+incorrect, as there are many other factors influencing performance. The fact
+that, despite all these approximations and assumptions, the expected speedup
+closely matched the actual speedup gives a strong indication about the relative
+importance of memory latency on code performance, at least for the problems
+tested.
+
+An important outcome of the study is that the traditional logic that maximum
+performance on a symmetric multiprocessor (SMP) node is always obtained by using
+MPI processes only, if given enough memory, is by no means a hard-and-fast
+rule. We saw in all cases that using more threads actually gives a performance
+benefit due to the lower L3 miss rate. That being said, compiling a code without
+threading enabled at all does allow the compiler to be more aggressive with
+optimization, so some of performance gain may be offset by this ``threads
+overhead''. It is hard to predict for a particular problem, computer platform,
+and compiler what the optimal run configuration is, so application developers
+and users are encouraged to test different combinations of processes and threads
+to determine what is optimal for their particular problem.
+
+Understanding the on-node scaling behavior for the current generation of
+multi-core processors, featuring 2--20 heavyweight cores that rely heavily on
+instruction-level parallelism, will help us to understand and reason about
+expected performance on future architectures based on many-core processors,
+featuring over 100 lightweight cores that rely primarily on thread-level and
+data-level parallelism. It is anticipated that in order to attain exascale
+supercomputing, many-core processors and/or GPUs are the only viable approach
+due to their much-improved power efficiency.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\setlength{\baselineskip}{12pt}
+
+\bibliographystyle{mc2015}
+\bibliography{references}
+
+\end{document}
