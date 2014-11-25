@@ -31,8 +31,9 @@
 
 \author{Andrew R. Siegel}
 \author{Ronald O. Rahaman}
-\affil{Argonne National Laboratory, Theory and Computing Sciences \\ 9700 S
-  Cass Ave., Argonne, IL 60439, United States \\ siegela@mcs.anl.gov}
+\affil{Argonne National Laboratory, Theory and Computing Sciences \\ 9700 S Cass
+  Ave., Argonne, IL 60439, United States \\ siegela@mcs.anl.gov;
+  rahaman@mcs.anl.gov}
 
 \maketitle
 
@@ -77,7 +78,7 @@ shown that the total memory requirements can be decomposed effectively using
 either domain decomposition~\cite{jcp-siegel-2012, jcp-siegel-2013,
   physor-horelik-2014, pc-horelik-2014} or data
 decomposition~\cite{jcp-romano-2013}. With most of the barriers to effective
-utilization of distribution-memory architectures having been overcome, the focus
+utilization of distributed-memory architectures having been overcome, the focus
 is now shifting to scaling and performance issues for on-node, shared-memory
 architectures. Making effective use of multi- and many-core processors will be
 considerably more difficult due to the greater complexity of memory hierarchies
@@ -131,7 +132,7 @@ problem being run, with the following generic categories of data:
   geometry, where regions of space are defined as the union, difference, and
   intersection of curved surfaces. Each region of space must also be assigned a
   material, defined by its physical characteristics which, at the very least,
-  includes the nuclides and their corresponding densities.
+  include the nuclides and their corresponding densities.
 \item \emph{Cross sections} --- Each unique nuclide in the problem must be
   accompanied by a set of interaction data that describe the likelihood of
   various reactions and their outcomes. This data is used to sample the
@@ -143,7 +144,7 @@ problem being run, with the following generic categories of data:
   particular region of the problem.
 \end{itemize}
 Unfortunately, due to the stochastic nature of particle transport, there is no
-consistent pattern for how the various parts of the data in memory are
+consistent pattern for how various parts of the data in memory are
 accessed. To understand why this is detrimental to performance, a basic
 understanding of the memory hierarchy of modern computer architectures is
 necessary.
@@ -268,7 +269,7 @@ and data caches and a shared L3 cache. The second node contains two 12-core
 Intel Xeon E5-2680 v3 (Haswell-EP microarchitecture) processors, which also have
 private L1 and L2 instruction and data caches and a shared L3 cache. While each
 simulation was run so as to fully utilize all cores within the node, we varied
-the number of processors and threads to analyze its effect of performance as
+the number of processes and threads to analyze its effect of performance as
 well.
 
 \autoref{tab:small-ivy} shows the results for the small H-M benchmark on the Ivy
@@ -287,11 +288,11 @@ study take advantage of a feature called Turbo Boost where the clock frequency
 changes dynamically based on the workload.
 
 We see that the best performance is achieved with two MPI processes and eight
-OpenMC threads. This can be explained by the following arguments. When 20
+OpenMP threads. This can be explained by the following arguments. When 20
 processes are used, each process has its own physical address space containing
 the fully replicated problem data. Thus, even if two processes load the same
 piece of data, e.g. a cross section for a particular nuclide at a particular
-energy, at the same time, there is no guarantee that either will results in a L3
+energy, at the same time, there is no guarantee that either will result in a L3
 cache hit because the data are in separate address spaces. As more threads and
 fewer processors are used, there is a higher likelihood that data used by
 multiple threads will already be in the shared L3 cache, and thus we see that
@@ -361,7 +362,7 @@ where $N_X$ is the total accesses per particle at the $X$ level (where $X$ can
 be L2, L3 or main memory), $M_X$ is the miss rate at the $X$ level, and
 $\alpha_X$ is the latency for a hit at the $X$ level. To calculate the effective
 latency, we use some gross estimates from~\cite{intel} for memory latencies: 10
-cycles of a L2 hit, 50 cycles for a local L3 hit, 100 cycles for a remote L3
+cycles for a L2 hit, 50 cycles for a local L3 hit, 100 cycles for a remote L3
 hit, 170 cycles for local DRAM access, and 280 cycles for remote DRAM access. In
 the 20 thread case, we assume that L3 and main memory accesses are split between
 the local and remote processor. \autoref{tab:latency} shows the calculated
@@ -471,7 +472,7 @@ associated communication~\cite{trans-romano-2012}.
 the small and large H-M benchmarks, respectively, on the node with two 12-core
 Haswell processors with and without tallies. In this case, the best performance
 is obtained for 4 processes / 6 threads. This is a result of a unique snoop mode
-utilized in the Haswell-EP architecture called cluster-of-die where the CPU and
+utilized in the Haswell-EP architecture called cluster-on-die where the CPU and
 shared L3 cache are effectively split in half, appearing as two non-uniform
 memory access (NUMA) nodes to the operating system each with half the number of
 cores and L3 cache. This splitting means that the latency to the L3 cache is
@@ -601,12 +602,12 @@ cache. Such events could be measured using more complex uncore\footnote{In some
   of a microprocessor that are not directly on the core but still essential to
   performance.} performance counters, but we were unable to use these counters
 due to an insufficient Linux kernel version. We also observed apparent miss
-rates greater than 100\% in \autoref{tab:large-haswell}, indicated that the set
+rates greater than 100\% in \autoref{tab:large-haswell}, indicating that the set
 of events covered by \texttt{PAPI\_L2\_DCM} is likely larger than the set of
 events covered by \texttt{PAPI\_L2\_DCA}. In addition, we didn't account for
 cache hits and misses in the TLB, which can sometimes have important effects on
 performance. Lastly, in calculating an expected speedup, we assumed that the
-performance completely governed by the memory latency; this is obviously
+performance was completely governed by the memory latency; this is obviously
 incorrect, as there are many other factors influencing performance. The fact
 that, despite all these approximations and assumptions, the expected speedup
 closely matched the actual speedup gives a strong indication about the relative
@@ -619,7 +620,7 @@ MPI processes only, if given enough memory, is by no means a hard-and-fast
 rule. We saw in all cases that using more threads actually gives a performance
 benefit due to the lower L3 miss rate. That being said, compiling a code without
 threading enabled at all does allow the compiler to be more aggressive with
-optimization, so some of performance gain may be offset by this ``threads
+optimization, so some of performance gain may be offset by this ``thread
 overhead''. It is hard to predict for a particular problem, computer platform,
 and compiler what the optimal run configuration is, so application developers
 and users are encouraged to test different combinations of processes and threads
