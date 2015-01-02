@@ -115,6 +115,7 @@ seek to address a number of shortcomings in these studies, namely:
 \item Performance counter measurements were performed on the XSBench mini-app,
   but similar measurements were not shown for the full application it is meant
   to mimic, OpenMC.
+  %RR \item The previous study presented results on a multiprocessor architecture.  However, logical threads were not explicitly mapped to physical processors, and effects from NUMA could not exposed.
 \end{itemize}
 As will be shown, the results also help to explain performance trade-offs for
 using fewer or greater numbers of processes and threads within a single node.
@@ -181,7 +182,9 @@ a megabyte, whereas the memory needed to run a MC simulation can be tens or
 hundreds of gigabytes. Given that the data are accessed more-or-less randomly,
 the cache miss ratios can be very high, meaning that many memory accesses would
 incur the latency penalty of accessing the L3 cache or, even worse, main
-memory. As we will show in the results, the observed performance of a MC
+memory.
+%RR In many architectures with multiple CPUs, main memory is further subdivided between CPUs; and in some multicore CPUs, L3 is similarly subdivided between cores.  In both cases, each processing element has access to both its own local memory and the remote memory from other processing elements; but local memory can be accessed with siginificantly less overhead from latency and contention.  These designs implement \emph{non-uniform uniform memory access (NUMA)}, and applications running on NUMA architectures benefit greatly from ``NUMA-aware'' memory access patterns.  For example, an application can suffer from less latency if each parallel task can its restrict memory accessses to its local memory.
+As we will show in the results, the observed performance of a MC
 transport simulation is very closely related to the effective memory latency
 accounting for all levels of the memory hierarchy. This has important
 implications for MC run strategies.
@@ -194,6 +197,7 @@ write-through or write-back. In modern processors, a specialized cache called
 the translation lookaside buffer (TLB) that handles virtual-to-physical address
 translation is also used. A thorough discussion of these implementation details
 is beyond the scope of the current work.
+%RR (Mentioning TLB may be TMI, since it's never referred to in your results or discussion.)
 
 \section{Methods}
 
