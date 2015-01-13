@@ -65,16 +65,15 @@ where increases in performance are now primarily obtained via greater
 thread-level and data-level parallelism rather than by increases in CPU clock
 frequencies as evidenced by the current generation of multi-core, pipelined,
 multiple-issue processors. While the raw floating point performance of
-processors has grown steadily, the performance of the memory subsystem has not
-kept up to pace and as a result, many codes are now limited by memory loads and
-stores rather than by floating point operations per second (FLOPs). One key
+processors has grown rapidly, the performance of the memory subsystem has
+improved more slowly; as a result, many codes are now limited by memory loads
+and stores rather than by floating point operations per second (FLOPs). One key
 example is Monte Carlo (MC) neutral particle transport as used for nuclear
 reactor calculations. These calculations are particularly challenging for a
 number of reasons: 1) the memory requirements have the potential to exceed the
 memory available on a single node, 2) the complex memory access patterns
-typically result in a high cache miss rate, and 3) the level of spatial
-fidelity needed requires extremely long time-to-solution for most problems of
-interest.
+typically result in a high cache miss rate, and 3) the level of spatial fidelity
+needed requires extremely long time-to-solution for most problems of interest.
 
 Many recent studies have focused on understanding and offering solutions to
 these challenging aspects of MC reactor simulations. Algorithmic improvements
@@ -117,7 +116,7 @@ seek to address a number of shortcomings in these studies, namely:
   to mimic, OpenMC.
 \item The previous study presented results on a multiprocessor architecture.
   However, logical threads were not explicitly mapped to physical processors,
-  and effects from NUMA could not exposed.
+  and effects from non-uniform memory access (NUMA) could not be exposed.
 \end{itemize}
 As will be shown, the results also help to explain performance trade-offs for
 using fewer or greater numbers of processes and threads within a single node.
@@ -139,8 +138,8 @@ problem being run, with the following generic categories of data:
 \item \emph{Geometry and materials} --- An abstract model of the shape and
   composition of each unique region within the geometry must be held in
   memory. In most MC codes, the geometry is represented using combinatorial
-  geometry, where regions of space are defined as the union, difference, and
-  intersection of curved surfaces. Each region of space must also be assigned a
+  geometry, where regions of space are defined as unions, differences, and
+  intersections of curved surfaces. Each region of space must also be assigned a
   material, defined by its physical characteristics which, at the very least,
   include the nuclides and their corresponding densities.
 \item \emph{Cross sections} --- Each unique nuclide in the problem must be
@@ -184,9 +183,7 @@ a megabyte, whereas the memory needed to run a MC simulation can be tens or
 hundreds of gigabytes. Given that the data are accessed more-or-less randomly,
 the cache miss ratios can be very high, meaning that many memory accesses would
 incur the latency penalty of accessing the L3 cache or, even worse, main
-memory.
-%RR In many architectures with multiple CPUs, main memory is further subdivided between CPUs; and in some multicore CPUs, L3 is similarly subdivided between cores.  In both cases, each processing element has access to both its own local memory and the remote memory from other processing elements; but local memory can be accessed with siginificantly less overhead from latency and contention.  These designs implement \emph{non-uniform uniform memory access (NUMA)}, and applications running on NUMA architectures benefit greatly from ``NUMA-aware'' memory access patterns.  For example, an application can suffer from less latency if each parallel task can its restrict memory accessses to its local memory.
-As we will show in the results, the observed performance of a MC
+memory. As we will show in the results, the observed performance of a MC
 transport simulation is very closely related to the effective memory latency
 accounting for all levels of the memory hierarchy. This has important
 implications for MC run strategies.
@@ -199,7 +196,17 @@ write-through or write-back. In modern processors, a specialized cache called
 the translation lookaside buffer (TLB) that handles virtual-to-physical address
 translation is also used. A thorough discussion of these implementation details
 is beyond the scope of the current work.
-%RR (Mentioning TLB may be TMI, since it's never referred to in your results or discussion.)
+
+Many multiprocessor architectures also feature non-uniform memory accesss
+(NUMA), in which memory is subdivided between processors.  Each processor can
+access a local subset of memory as well as remote memory (which is local to
+other proecessors), since local and remote memory share the same address space
+and are physically connected.  However, each processor can access its local
+memory with less latency than remote memory.  Therefore, applications with
+NUMA-balanced memory access patterns, in which each processor restricts its
+memory usage to local memory, will experience less latency. In most cases, the
+operating system cannot guarantee NUMA-balancing, and the application developer
+must deliberately employ NUMA-aware programming and execution mechanisms.
 
 \section{Methods}
 
@@ -269,24 +276,25 @@ tallies and the fourth having the same tallies as in the second case. The
 number of nuclides in the fuel was increased as a depletion simulation would
 require a large nuclide inventory. Given that the number of cross section
 lookups is directly proportional to the number of nuclides, having a larger
-nuclide inventory has a significant effect on performance. Let us refer to
+nuclide inventory has a significant effect on performance. We refer to
 cases 1 and 2 as small H-M and to cases 3 and 4 as large H-M.
 
-For each of the four cases, OpenMC was run on two different nodes. The first
-node contains two 10-core Intel Xeon E5-2680 v2 (Ivy Bridge-EP
-microarchitecture) processors, each of which has private L1 and L2 instruction
-and data caches and a shared L3 cache. The second node contains two 12-core
-Intel Xeon E5-2680 v3 (Haswell-EP microarchitecture) processors, which also has
-private L1 and L2 instruction and data caches and a shared L3 cache. While each
-simulation was run so as to fully utilize all cores\footnote{Hyperthreading was
-  disabled on all systems used in this paper, and thus the core counts include
-  only physical cores.} within the node, we varied the number of processes and
-threads to analyze its effect on performance as well. Process and thread
-affinities were fixed such that each thread was resident to a unique core.
+For each of the four cases, OpenMC was run on two different node
+architectures. The first contains two 10-core Intel Xeon E5-2680 v2 (Ivy
+Bridge-EP microarchitecture) processors, each of which has private L1 and L2
+instruction and data caches and a shared L3 cache. The second node contains two
+12-core Intel Xeon E5-2680 v3 (Haswell-EP microarchitecture) processors, which
+also has private L1 and L2 instruction and data caches and a shared L3
+cache. While each simulation was run so as to fully utilize all
+cores\footnote{Hyperthreading was disabled on all systems used in this paper,
+  and thus the core counts include only physical cores.} within the node, we
+varied the number of processes and threads to analyze its effect on performance
+as well. Process and thread affinities were fixed such that each thread was
+resident to a unique core.
 
-\autoref{tab:small-ivy} shows the results for the small H-M benchmark on the
-Ivy Bridge processor with and without tallies. Miss rates were calculated
-simply as the number of misses over the number of accesses. The bandwidth
+\autoref{tab:small-ivy} shows the results for the small H-M benchmark on the Ivy
+Bridge processor with and without tallies. Miss rates were calculated directly
+as the ratio of the number of misses to the number of accesses. The bandwidth
 utilization was calculated as~\cite{physor-tramm-2014}
 \begin{equation}
   \label{eq:bandwidth}
@@ -299,26 +307,33 @@ to calculate the bandwidth. However, the Intel Xeon processors used in this
 study take advantage of a feature called Turbo Boost where the clock frequency
 changes dynamically based on the workload.
 
-We see that the best performance is achieved with two MPI processes and ten
-OpenMP threads. This can be explained by the following arguments. When 20
-processes are used, each process has its own physical address space containing
-the fully replicated problem data. Thus, even if two processes load the same
-piece of data, e.g., a cross section for a particular nuclide at a particular
-energy, at the same time, there is no guarantee that either will result in a L3
-cache hit because the data are in separate address spaces. As more threads and
-fewer processes are used, there is a higher likelihood that data used by
-multiple threads will already be in the shared L3 cache, and thus we see that
-the L3 miss rate drops substantially as more threads are added. Note, however,
-that when we reach 20 threads, a separate effect is at play. As there are two
-physical CPUs, each with its own main memory bank and shared L3 cache, when 20
-threads are used, half of the memory accesses will refer to physical addresses
-in the remote memory bank which results in a much higher L3 miss
-rate. Furthermore, the latency to access the remote L3 cache and main memory is
-considerably higher than the latency for the local memories\footnote{In this
-  particular architecture, memory accesses to the remote L3 cache and main
-  memory must travel through the Quick Path Interconnect (QPI) bus}. Together,
-the increase in the L3 miss rate and the effective memory latencies contribute
-to a stark drop in the observed performance.
+The results in Table 1 show the best performance is achieved using two MPI
+processes each with ten OpenMP threads. This can be explained by the following
+arguments. When 20 processes are used, each process has its own physical address
+space and independently stores the fully replicated problem data. Thus, even if
+two processes load the same data simultaneously (e.g., a cross section for a
+particular nuclide at a particular energy), there is no guarantee that either
+load will result in a L3 cache hit, since the data reside in separate address
+spaces. By contrast, if fewer processes are used with multiple threads per
+process, there is a higher likelihood that data used by multiple threads will
+already be in the shared L3 cache. Thus we expect the L3 miss rate to drop
+substantially as more threads are added. This effect is clearly shown by
+examining the L3 miss rates tabulated in Table 1.
+
+Note, however, that in the extreme case of a single process with 20 threads,
+NUMA effects erode peformance. In this architecture, there are two physical
+CPUs, and each acts as a NUMA node with its own main memory bank and shared L3
+cache. When two or more processes are used, each process's virtual address space
+is restricted to a single NUMA node and memory accesses are restricted to local
+memory.  However, when a single process is used, the single virtual address
+space spans both NUMA nodes, and half of the memory accesses will refer to
+physical addresses in the remote memory bank; this can result in a much higher
+L3 miss rate. Furthermore, the latency to access the remote L3 cache and main
+memory is considerably higher than the latency for the local
+memories\footnote{In this particular architecture, memory accesses to the remote
+  L3 cache and main memory must travel through the Quick Path Interconnect (QPI)
+  bus}. Together, the increase in the L3 miss rate and the effective memory
+latencies contribute to a significant decline in performance.
 \begin{table}[htb]
   \centering
   \caption{Cache accesses and miss rates, bandwidth utilization, and observed
@@ -364,17 +379,17 @@ Interestingly, while the L3 miss rate drops from about 20\% to 1\% going from
 \autoref{tab:small-ivy}, the performance increases only by a very small
 amount. This is due to the fact that the L2 miss rate increases slightly with
 increasing numbers of threads thereby offsetting the lower L3 miss rate. To
-substantiate this, we can develop a metric for the effective total memory
+substantiate this, we  develop a metric for the effective total memory
 latency per particle:
 \begin{equation}
   \bar{\alpha} = N_{L2}\cdot \left ( (1-M_{L2})\alpha_{L2} + M_{L2}\cdot((1 -
   M_{L3})\alpha_{L3} + M_{L3}\alpha_{main}) \right )
 \end{equation}
-where $N_X$ is the total accesses per particle at the $X$ level (where $X$ can
-be L2, L3, or main memory), $M_X$ is the miss rate at the $X$ level, and
-$\alpha_X$ is the latency for a hit at the $X$ level. To calculate the
+where $N_X$ is the total accesses per particle at level $X$ (where $X$ can
+be L2, L3, or main memory), $M_X$ is the miss rate at level $X$, and
+$\alpha_X$ is the latency for a hit at level $X$. To calculate the
 effective latency, we use some gross estimates from~\cite{intel} for memory
-latencies: 10 cycles for a L2 hit, 50 cycles for a local L3 hit, 100 cycles for
+latencies: 10 cycles for an L2 hit, 50 cycles for a local L3 hit, 100 cycles for
 a remote L3 hit, 170 cycles for local DRAM access, and 280 cycles for remote
 DRAM access. In the 20 thread case, we assume that L3 and main memory accesses
 are split between the local and remote processor. \autoref{tab:latency} shows
@@ -420,18 +435,18 @@ well as the large drop in performance observed for the 20 thread runs.
   }
 \end{table}
 
-\autoref{tab:large-ivy} shows the results for the large H-M benchmark on the
-Ivy Bridge processor with and without tallies. Similar themes are seen as in
-the small H-M benchmark where the maximum performance is obtained with 2
-processes / 10 threads. Due to the code spending a large fraction of its time
-collecting tallies, the L2 data cache accesses are much higher than for small
-H-M along with a very high miss rate, resulting in a high number of L3 accesses
-as well. Also note that the main memory bandwidth utilization becomes as high
-as 21 GiB/s. Previous measurements~\cite{ane-tramm-2014} using the STREAM
-benchmark demonstrated that the maximum sustained bandwidth available to a user
-application on a similar platform is about 25--30 GiB/s. This lends further
-credence to the argument that in our cases, OpenMC was primarily limited by
-latency rather than available bandwidth.
+\autoref{tab:large-ivy} shows the results for the large H-M benchmark on the Ivy
+Bridge processor with and without tallies. Similar trends are seen as in the
+small H-M benchmark where the maximum performance is obtained with 2 processes /
+10 threads. Because the code spends a large fraction of its time collecting
+tallies, the L2 data cache accesses and miss rate are much higher than for small
+H-M, resulting in a high number of L3 accesses as well. Also note that the main
+memory bandwidth utilization becomes as high as 21 GiB/s. Previous
+measurements~\cite{ane-tramm-2014} using the STREAM benchmark demonstrated that
+the maximum sustained bandwidth available to a user application on a similar
+platform is about 25--30 GiB/s. This lends further evidence to the argument that
+in the present study, OpenMC was primarily limited by latency rather than
+available bandwidth.
 \begin{table}[htb]
   \centering
   \caption{Cache accesses and miss rates, bandwidth utilization, and observed
@@ -472,13 +487,13 @@ latency rather than available bandwidth.
 \end{table}
 
 Another factor that can potentially affect performance is MPI communication,
-especially when a large number of tallies are used. While the simulations run
-here were constructed so as to minimize the impact of network communication, it
-still had a noticeable effect on the cases with tallies using 20 MPI
-processes. In the large H-M case with tallies, almost half of the time was
-spent accumulating tally data from the different MPI ranks. That being said,
-this effect can be reduced to a negligible level by increasing the number of
-particles simulated per batch, or using other techniques to reduce the
+especially when a large number of tallies are used. While the simulations
+carried out in the current study were constructed so as to minimize the impact
+of network communication, communication costs were significant in the cases with
+tallies using 20 MPI processes. In the large H-M case with tallies, almost half
+of the run time involved accumulating tally data from the different MPI ranks.
+This effect, however, can be reduced to a negligible level by increasing the
+number of particles simulated per batch, or using other techniques to reduce the
 associated communication~\cite{trans-romano-2012}.
 
 % Small H-M,1,1,1442,38.2,28514,28.0,8535,1.5,46,,1.00,5986,,1.61E-06,1.00E+00
@@ -490,12 +505,12 @@ associated communication~\cite{trans-romano-2012}.
 for the small and large H-M benchmarks, respectively, on the node with two
 12-core Haswell processors with and without tallies. In this case, the best
 performance is obtained for 4 processes / 6 threads. This is a result of a
-unique snoop mode utilized in the Haswell-EP architecture called cluster-on-die
+unique {\em cluster-on-die} snoop mode in the Haswell-EP architecture
 where the CPU and shared L3 cache are effectively split in half, appearing as
-two non-uniform memory access (NUMA) nodes to the operating system each with
-half the number of cores and L3 cache. This splitting means that the latency to
+two NUMA nodes to the operating system each with
+half the number of cores and L3 cache size. This splitting means that the latency to
 the L3 cache is reduced, but the miss rate is also potentially higher due to
-the reduced size of the cache. While there is a general trend of a decreasing
+the reduced size. While there is a general trend of a decreasing
 L3 miss rate with increasing threads, a few of the cases require further
 explanation. In the 6 process / 4 thread and 2 process / 12 thread cases, the
 miss rate is higher than it would otherwise have been because processes may
